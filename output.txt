@@ -1,0 +1,1059 @@
+File: Assault cube hack.cpp
+Code here:
+#include <Windows.h>
+#include <iostream>
+#include "Directx.h"
+#include "Memory reader.h"
+#include "Utils.h"
+#include <conio.h> // For _getch()
+
+int main() {
+    const wchar_t* procName = L"ac_client.exe";
+    DWORD procId = GetProcId(procName);
+
+    if (procId == 0) {
+        std::cerr << "AssaultCube process not found." << std::endl;
+        return 1;
+    }
+
+    HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, procId);
+    if (!hProcess) {
+        std::cerr << "Failed to open process. Error code: " << GetLastError() << std::endl;
+        return 1;
+    }
+
+    uintptr_t moduleBase = GetModuleBaseAddress(procId, procName);
+    if (moduleBase == 0) {
+        std::cerr << "Failed to get module base address." << std::endl;
+        CloseHandle(hProcess);
+        return 1;
+    }
+
+    std::cout << "Process ID: " << procId << std::endl;
+    std::cout << "Module Base Address: " << std::hex << moduleBase << std::dec << std::endl;
+
+    viewMatrix viewMatrix;
+    GetViewMatrix(hProcess, viewMatrix);
+
+    std::vector<Player> players = GetPlayerData(hProcess, moduleBase);
+
+    // Read camera angles
+    float cameraYaw = GetCameraYaw(hProcess, moduleBase);
+    float cameraPitch = GetCameraPitch(hProcess, moduleBase);
+
+    std::vector<Entity> entities;
+    ReadEntities(hProcess, moduleBase, entities);
+
+    std::cout << "View matrix, camera angles, player data, and entities retrieved." << std::endl;
+
+    // Close handle to the process
+    CloseHandle(hProcess);
+
+    // Create overlay window and render ESP
+    HWND hGameWnd = FindWindow(NULL, L"AssaultCube"); // Make sure to replace with the correct game window title
+    if (!hGameWnd) {
+        std::cerr << "Game window not found." << std::endl;
+        return 1;
+    }
+
+    // Get game window dimensions
+    RECT clientRect;
+    GetClientRect(hGameWnd, &clientRect);
+    int screenWidth = clientRect.right - clientRect.left;
+    int screenHeight = clientRect.bottom - clientRect.top;
+
+    std::cout << "Screen Width: " << screenWidth << ", Screen Height: " << screenHeight << std::endl;
+
+    CreateOverlayWindow(GetModuleHandle(NULL), hGameWnd, viewMatrix, players, screenWidth, screenHeight, cameraYaw, cameraPitch);
+
+    std::cout << "Press any key to exit..." << std::endl;
+    _getch(); // Wait for a key press
+    return 0;
+}
+
+File: Assault cube hack.h
+Code here:
+#pragma once
+
+#include "resource.h"
+
+
+File: Directx.cpp
+Code here:
+#include "DirectX.h"
+#include "Globals.h"
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <DirectXMath.h>
+#include <wrl/client.h>
+#include "ESP.h"
+#include <iostream>
+#include "Memory reader.h"
+#include <vector>
+#include <windows.h>
+#include <d2d1.h>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
+
+using namespace Microsoft::WRL;
+
+// Global variables defined in Globals.cpp
+extern std::vector<Player> g_players;
+extern viewMatrix g_viewMatrix;
+extern float g_cameraYaw;
+extern float g_cameraPitch;
+extern int g_screenWidth;
+extern int g_screenHeight;
+extern std::mutex memoryMutex;
+extern std::atomic<bool> memoryReaderRunning;
+
+IDXGISwapChain* swapchain = nullptr;
+ID3D11Device* dev = nullptr;
+ID3D11DeviceContext* devcon = nullptr;
+ComPtr<ID3D11RenderTargetView> backbuffer;
+ComPtr<ID2D1Factory1> pFactory;
+ComPtr<ID2D1DeviceContext> pRenderTarget;
+ComPtr<ID2D1SolidColorBrush> pBrush;
+ComPtr<IDXGISurface> pBackBuffer;
+HWND hOverlayWnd = nullptr;
+
+void InitD3D(HWND hWnd) {
+    DXGI_SWAP_CHAIN_DESC scd = {};
+    scd.BufferCount = 1;
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferDesc.Width = g_screenWidth;
+    scd.BufferDesc.Height = g_screenHeight;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = hWnd;
+    scd.SampleDesc.Count = 1;
+    scd.Windowed = TRUE;
+    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        nullptr,
+        0,
+        D3D11_SDK_VERSION,
+        &scd,
+        &swapchain,
+        &dev,
+        nullptr,
+        &devcon
+    );
+
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create device and swap chain: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    ComPtr<ID3D11Texture2D> pBackBufferTexture;
+    hr = swapchain->GetBuffer(0, IID_PPV_ARGS(&pBackBufferTexture));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to get swap chain buffer: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    hr = dev->CreateRenderTargetView(pBackBufferTexture.Get(), nullptr, backbuffer.GetAddressOf());
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create render target view: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    devcon->OMSetRenderTargets(1, backbuffer.GetAddressOf(), nullptr);
+
+    D3D11_VIEWPORT viewport = {};
+    viewport.TopLeftX = 0;
+    viewport.TopLeftY = 0;
+    viewport.Width = static_cast<FLOAT>(g_screenWidth);
+    viewport.Height = static_cast<FLOAT>(g_screenHeight);
+
+    devcon->RSSetViewports(1, &viewport);
+
+    InitD2D();
+}
+
+void InitD2D() {
+    HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, pFactory.GetAddressOf());
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create D2D factory: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    hr = swapchain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to get swap chain buffer: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        0, 0
+    );
+
+    ComPtr<ID2D1RenderTarget> pRT;
+    hr = pFactory->CreateDxgiSurfaceRenderTarget(pBackBuffer.Get(), &props, &pRT);
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create render target: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    hr = pRT.As(&pRenderTarget);
+    if (FAILED(hr)) {
+        std::cerr << "Failed to convert render target to device context: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    hr = pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Red), pBrush.GetAddressOf());
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create brush: " << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+}
+
+void RenderFrame() {
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    devcon->ClearRenderTargetView(backbuffer.Get(), clearColor);
+
+    if (pRenderTarget) {
+        pRenderTarget->BeginDraw();
+        pRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));  // Transparent color
+
+        // Draw a red circle at the top left corner for debugging
+        D2D1_ELLIPSE redCircle = D2D1::Ellipse(D2D1::Point2F(50.0f, 50.0f), 25.0f, 25.0f);
+        pRenderTarget->FillEllipse(redCircle, pBrush.Get());
+
+        // Call RenderESP to draw player ESP
+        {
+            std::lock_guard<std::mutex> lock(memoryMutex);
+            RenderESP(pRenderTarget.Get(), pBrush.Get(), g_viewMatrix, g_players, g_screenWidth, g_screenHeight, g_cameraYaw, g_cameraPitch);
+        }
+
+        HRESULT hr = pRenderTarget->EndDraw();
+        if (FAILED(hr)) {
+            std::cerr << "Failed to end draw: " << std::hex << hr << std::dec << std::endl;
+        }
+    }
+
+    swapchain->Present(0, 0);
+}
+
+void CleanD3D() {
+    swapchain->SetFullscreenState(FALSE, NULL);
+    swapchain->Release();
+    dev->Release();
+    devcon->Release();
+}
+
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_PAINT:
+        RenderFrame();
+        ValidateRect(hWnd, NULL);
+        break;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProc(hWnd, message, wParam, lParam);
+}
+
+void CreateOverlayWindow(HINSTANCE hInstance, HWND hGameWnd, const viewMatrix& viewMatrix, const std::vector<Player>& players, int screenWidth, int screenHeight, float cameraYaw, float cameraPitch) {
+    g_viewMatrix = viewMatrix;
+    g_players = players;
+    g_screenWidth = screenWidth;
+    g_screenHeight = screenHeight;
+    g_cameraYaw = cameraYaw;
+    g_cameraPitch = cameraPitch;
+
+    WNDCLASSEX wc = {};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)COLOR_WINDOW;
+    wc.lpszClassName = L"Overlay";
+
+    RegisterClassEx(&wc);
+
+    RECT rect;
+    GetWindowRect(hGameWnd, &rect);
+
+    hOverlayWnd = CreateWindowEx(
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+        wc.lpszClassName,
+        L"Overlay",
+        WS_POPUP,
+        rect.left, rect.top,
+        screenWidth, screenHeight,
+        NULL, NULL, hInstance, NULL
+    );
+
+    SetLayeredWindowAttributes(hOverlayWnd, 0, 255, LWA_ALPHA);
+    SetLayeredWindowAttributes(hOverlayWnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+
+    InitD3D(hOverlayWnd);
+
+    ShowWindow(hOverlayWnd, SW_SHOW);
+
+    MSG msg = {};
+    DWORD procId = GetProcId(L"ac_client.exe");
+    HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, procId);
+    uintptr_t moduleBase = GetModuleBaseAddress(procId, L"ac_client.exe");
+
+    StartMemoryReaderThread(hProcess, moduleBase);  // Start the memory reader thread
+
+    while (msg.message != WM_QUIT) {
+        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        else {
+            RenderFrame();
+        }
+    }
+
+    StopMemoryReaderThread();  // Stop the memory reader thread
+
+    CloseHandle(hProcess);
+    CleanD3D();
+}
+
+File: Directx.h
+Code here:
+// Directx.h
+#pragma once
+#include <Windows.h>
+#include <d2d1.h>
+#include <vector>
+#include "Memory reader.h"
+#include "Utils.h"
+#include "Globals.h" // Include the Globals header for global variables
+
+// Function declarations
+void InitD3D(HWND hWnd);
+void InitD2D();
+void RenderFrame();
+void CleanD3D();
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+void CreateOverlayWindow(HINSTANCE hInstance, HWND hGameWnd, const viewMatrix& viewMatrix, const std::vector<Player>& players, int screenWidth, int screenHeight, float cameraYaw, float cameraPitch);
+void UpdateOverlayWindowSize(HWND hGameWnd);
+Vector3 AdjustForCamera(const Vector3& position, float cameraYaw, float cameraPitch);
+
+
+File: Esp.cpp
+Code here:
+#include "ESP.h"
+#include "Utils.h"
+#include <d2d1_1.h>
+#include <vector>
+#include "Memory reader.h"
+#include <iostream>
+#include "Vector2.h"
+
+void RenderESP(ID2D1DeviceContext* pRenderTarget, ID2D1SolidColorBrush* pBrush, const viewMatrix& viewMatrix, const std::vector<Player>& players, int screenWidth, int screenHeight, float cameraYaw, float cameraPitch) {
+    D2D1_SIZE_F rtSize = pRenderTarget->GetSize();
+
+    for (size_t playerIndex = 0; playerIndex < players.size(); ++playerIndex) {
+        const auto& player = players[playerIndex];
+        if (!player.isAlive)
+            continue;
+
+        Vector2 screenPosHead;
+        Vector2 screenPosFeet;
+
+        // Use the view matrix directly for world to screen transformation
+        if (worldToScreen(player.head, screenPosHead, viewMatrix, screenWidth, screenHeight) &&
+            worldToScreen(player.feet, screenPosFeet, viewMatrix, screenWidth, screenHeight)) {
+
+            std::cout << "Player " << playerIndex + 1 << ": World Position: (" << player.position.x << ", " << player.position.y << ", " << player.position.z << ")" << std::endl;
+            std::cout << "Player " << playerIndex + 1 << ": Screen Position: Head(" << screenPosHead.x << ", " << screenPosHead.y << "), Feet(" << screenPosFeet.x << ", " << screenPosFeet.y << ")" << std::endl;
+
+            float boxHeight = screenPosFeet.y - screenPosHead.y;
+            float boxWidth = boxHeight / 2.0f;
+
+            // Ensure the box height and width are valid
+            if (boxHeight > 0 && boxWidth > 0) {
+                D2D1_RECT_F rect = D2D1::RectF(screenPosHead.x - boxWidth / 2, screenPosHead.y, screenPosHead.x + boxWidth / 2, screenPosFeet.y);
+                pRenderTarget->DrawRectangle(rect, pBrush, 2.0f);
+            }
+        }
+        else {
+            std::cout << "Player " << playerIndex + 1 << " is not within screen bounds." << std::endl;
+        }
+    }
+}
+
+File: Esp.h
+Code here:
+#pragma once
+#include <d2d1_1.h>
+#include <vector>
+#include "Memory reader.h"
+#include "Directx.h"
+#include "Utils.h"
+#include "Globals.h"  // Add this line
+
+void RenderESP(ID2D1DeviceContext* pRenderTarget, ID2D1SolidColorBrush* pBrush, const viewMatrix& viewMatrix, const std::vector<Player>& players, int screenWidth, int screenHeight, float cameraYaw, float cameraPitch);
+
+File: framework.h
+Code here:
+// header.h : include file for standard system include files,
+// or project specific include files
+//
+
+#pragma once
+
+#include "targetver.h"
+#define WIN32_LEAN_AND_MEAN             // Exclude rarely-used stuff from Windows headers
+// Windows Header Files
+#include <windows.h>
+// C RunTime Header Files
+#include <stdlib.h>
+#include <malloc.h>
+#include <memory.h>
+#include <tchar.h>
+
+
+File: Global.cpp
+Code here:
+// Globals.cpp
+#include "Globals.h"
+
+viewMatrix g_viewMatrix;
+std::vector<Player> g_players;
+float g_cameraYaw;
+float g_cameraPitch;
+int g_screenWidth;
+int g_screenHeight;
+std::mutex memoryMutex;
+std::atomic<bool> memoryReaderRunning(false);
+
+
+File: Globals.h
+Code here:
+// Globals.h
+#pragma once
+
+#include <atomic>
+#include <vector>
+#include <mutex>
+#include "Utils.h"
+#include "Memory reader.h"  // Ensure this include is correct
+
+extern viewMatrix g_viewMatrix;
+extern std::vector<Player> g_players;
+extern float g_cameraYaw;
+extern float g_cameraPitch;
+extern int g_screenWidth;
+extern int g_screenHeight;
+extern std::mutex memoryMutex;
+extern std::atomic<bool> memoryReaderRunning;
+
+
+File: Mathematics.cpp
+Code here:
+#include "Mathematics.h"
+#include <cmath>
+#include <iostream>
+
+vec3d_f Mathematics::clipCoords;
+vec3d_f Mathematics::NDC;
+vec3d_f Mathematics::screen;
+
+bool Mathematics::WorldToScreen(vec3d_f pos, vec3d_f& screen, float matrix[16], int windowWidth, int windowHeight)
+{
+    Mathematics::clipCoords.x = pos.x * matrix[0] + pos.y * matrix[4] + pos.z * matrix[8] + matrix[12];
+    Mathematics::clipCoords.y = pos.x * matrix[1] + pos.y * matrix[5] + pos.z * matrix[9] + matrix[13];
+    Mathematics::clipCoords.z = pos.x * matrix[2] + pos.y * matrix[6] + pos.z * matrix[10] + matrix[14];
+    Mathematics::clipCoords.w = pos.x * matrix[3] + pos.y * matrix[7] + pos.z * matrix[11] + matrix[15];
+
+    if (clipCoords.w < 0.1f)
+    {
+        return false;
+    }
+
+    Mathematics::NDC.x = clipCoords.x / clipCoords.w;
+    Mathematics::NDC.y = clipCoords.y / clipCoords.w;
+    Mathematics::NDC.z = clipCoords.z / clipCoords.w;
+
+    Mathematics::screen.x = (windowWidth / 2 * NDC.x) + (NDC.x + windowWidth / 2);
+    Mathematics::screen.y = -(windowHeight / 2 * NDC.y) + (NDC.y + windowHeight / 2);
+
+    return true;
+}
+
+float Mathematics::GetDistance3D(vec3d_f m_pos, vec3d_f en_pos)
+{
+    return (float)(sqrt(((en_pos.x - m_pos.x) * (en_pos.x - m_pos.x)) + ((en_pos.y - m_pos.y) * (en_pos.y - m_pos.y)) + ((en_pos.z - m_pos.z) * (en_pos.z - m_pos.z))));
+}
+
+float Mathematics::GetDistance2D(vec3d_f m_pos, vec3d_f en_pos)
+{
+    return (float)(sqrt(
+        ((en_pos.x - m_pos.x) * (en_pos.x - m_pos.x))
+        + ((en_pos.z - m_pos.z) * (en_pos.z - m_pos.z))));
+}
+
+vec3d_f Mathematics::CalculateAngles(vec3d_f m_pos, vec3d_f en_pos)
+{
+    vec3d_f values;
+
+    float aTriangle = en_pos.x - m_pos.x;
+    float bTriangle = en_pos.z - m_pos.z;
+    float yTriangle = en_pos.y - m_pos.y;
+
+    float triangleHyp = Mathematics::GetDistance2D(m_pos, en_pos);
+
+    float yaw = -(float)(atan2(aTriangle, bTriangle) * (180 / M_PI) + 180);
+    float pitch = (float)((atan2(yTriangle, triangleHyp)) * (180 / M_PI));
+
+    values.x = yaw;
+    values.y = pitch;
+    values.z = 0;
+    return values;
+}
+
+File: Mathematics.h
+Code here:
+#ifndef MATHEMATICS_H
+#define MATHEMATICS_H
+
+struct vec3d_f {
+    float x, y, z;
+};
+
+class Mathematics {
+public:
+    static bool WorldToScreen(vec3d_f pos, vec3d_f& screen, float matrix[16], int windowWidth, int windowHeight);
+    static float GetDistance3D(vec3d_f m_pos, vec3d_f en_pos);
+    static float GetDistance2D(vec3d_f m_pos, vec3d_f en_pos);
+    static vec3d_f CalculateAngles(vec3d_f m_pos, vec3d_f en_pos);
+
+private:
+    static vec3d_f clipCoords;
+    static vec3d_f NDC;
+    static vec3d_f screen;
+};
+
+#endif // MATHEMATICS_H
+
+File: Memory reader.cpp
+Code here:
+#include "Memory reader.h"
+#include "Globals.h"
+#include <iostream>
+#include <Windows.h>
+#include <TlHelp32.h>
+#include <vector>
+#include <mutex>
+#include <thread>
+#include <atomic>
+
+// No need to redefine globals here
+
+DWORD GetProcId(const wchar_t* procName) {
+    DWORD procId = 0;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32 procEntry;
+        procEntry.dwSize = sizeof(procEntry);
+        if (Process32First(hSnap, &procEntry)) {
+            do {
+                if (!_wcsicmp(procEntry.szExeFile, procName)) {
+                    procId = procEntry.th32ProcessID;
+                    break;
+                }
+            } while (Process32Next(hSnap, &procEntry));
+        }
+    }
+    CloseHandle(hSnap);
+    std::cout << "Process ID: " << std::dec << procId << std::endl;
+    return procId;
+}
+
+uintptr_t GetModuleBaseAddress(DWORD procId, const wchar_t* modName) {
+    uintptr_t modBaseAddr = 0;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, procId);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32 modEntry;
+        modEntry.dwSize = sizeof(modEntry);
+        if (Module32First(hSnap, &modEntry)) {
+            do {
+                if (!_wcsicmp(modEntry.szModule, modName)) {
+                    modBaseAddr = (uintptr_t)modEntry.modBaseAddr;
+                    break;
+                }
+            } while (Module32Next(hSnap, &modEntry));
+        }
+    }
+    CloseHandle(hSnap);
+    std::cout << "Module Base Address: " << std::hex << modBaseAddr << std::dec << std::endl;
+    return modBaseAddr;
+}
+
+template <typename T>
+T ReadMemory(HANDLE hProcess, uintptr_t address) {
+    T buffer;
+    if (!ReadProcessMemory(hProcess, (LPCVOID)address, &buffer, sizeof(T), NULL)) {
+        std::cerr << "Failed to read memory at address: " << std::hex << address << std::dec << std::endl;
+        return 0;
+    }
+    return buffer;
+}
+
+uintptr_t ReadPointer(HANDLE hProcess, uintptr_t address) {
+    DWORD buffer = 0;
+    if (!ReadProcessMemory(hProcess, (LPCVOID)address, &buffer, sizeof(DWORD), NULL)) {
+        std::cerr << "Failed to read pointer at address: " << std::hex << address << " Error code: " << GetLastError() << std::dec << std::endl;
+        return 0;
+    }
+    return static_cast<uintptr_t>(buffer);
+}
+
+void GetViewMatrix(HANDLE hProcess, viewMatrix& viewMatrix) {
+    uintptr_t baseAddress = 0x0057DFD0; // Adjust this address if necessary
+    for (int i = 0; i < 16; ++i) {
+        viewMatrix.matrix[i] = ReadMemory<float>(hProcess, baseAddress + i * sizeof(float));
+    }
+
+    // Print the view matrix for debugging
+    std::cout << "View Matrix:" << std::endl;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            std::cout << viewMatrix.matrix[i * 4 + j] << " ";
+        }
+        std::cout << std::endl;
+    }
+}
+
+void ReadPlayerData(HANDLE hProcess, uintptr_t entityListBase, int playerIndex, std::vector<Player>& players) {
+    uintptr_t playerBasePtr = entityListBase + (playerIndex * sizeof(DWORD)); // 4-byte offset
+    uintptr_t playerBase = ReadPointer(hProcess, playerBasePtr);
+
+    if (playerBase == 0) {
+        std::cerr << "Failed to read player base address at index " << playerIndex << std::endl;
+        return;
+    }
+
+    Player player;
+
+    // Read Health
+    player.health = ReadMemory<int>(hProcess, playerBase + 0xEC);
+    player.isAlive = player.health > 0;
+
+    // Read Positions
+    player.position.x = ReadMemory<float>(hProcess, playerBase + 0x4);
+    player.position.y = ReadMemory<float>(hProcess, playerBase + 0x8);
+    player.position.z = ReadMemory<float>(hProcess, playerBase + 0xC);
+
+    // Read Head and Feet Positions from memory
+    player.head.x = ReadMemory<float>(hProcess, playerBase + 0x4);
+    player.head.y = ReadMemory<float>(hProcess, playerBase + 0x8);
+    player.head.z = ReadMemory<float>(hProcess, playerBase + 0xC);
+
+    player.feet.x = ReadMemory<float>(hProcess, playerBase + 0x4);
+    player.feet.y = ReadMemory<float>(hProcess, playerBase + 0x8);
+    player.feet.z = ReadMemory<float>(hProcess, playerBase + 0x30);
+
+    if (player.isAlive) {
+        std::cout << "Player " << playerIndex + 1 << ": Position (" << player.position.x << ", " << player.position.y << ", " << player.position.z << "), Health: " << player.health << std::endl;
+        players.push_back(player);
+    }
+}
+
+std::vector<Player> GetPlayerData(HANDLE hProcess, uintptr_t moduleBase) {
+    std::vector<Player> players;
+    uintptr_t entityListBaseAddress = moduleBase + 0x0018AC04;
+    uintptr_t entityListBase = ReadPointer(hProcess, entityListBaseAddress);
+
+    if (entityListBase == 0) {
+        std::cerr << "Failed to read entity list base address." << std::endl;
+        return players;
+    }
+
+    for (int i = 0; i < 31; ++i) {
+        ReadPlayerData(hProcess, entityListBase, i, players);
+    }
+
+    return players;
+}
+
+float GetCameraYaw(HANDLE hProcess, uintptr_t moduleBase) {
+    uintptr_t cameraYawAddress = moduleBase + 0x0017E0A8;
+    return ReadMemory<float>(hProcess, cameraYawAddress + 0x34);
+}
+
+float GetCameraPitch(HANDLE hProcess, uintptr_t moduleBase) {
+    uintptr_t cameraPitchAddress = moduleBase + 0x0017E0A8;
+    return ReadMemory<float>(hProcess, cameraPitchAddress + 0x38);
+}
+
+void ReadEntities(HANDLE hProcess, uintptr_t moduleBase, std::vector<Entity>& entities) {
+    // Define offsets for entities
+    uintptr_t entityListBase = moduleBase + 0x0018AC04;
+    uintptr_t entityBase = ReadPointer(hProcess, entityListBase);
+
+    for (int i = 0; i < 31; ++i) {
+        Entity entity;
+        entity.base = entityBase + (i * sizeof(DWORD));
+
+        entity.health = ReadMemory<int>(hProcess, entity.base + 0xEC);
+        ReadProcessMemory(hProcess, (LPCVOID)(entity.base + 0x225), &entity.name, sizeof(entity.name), nullptr);
+        entity.position_head.x = ReadMemory<float>(hProcess, entity.base + 0x4);
+        entity.position_head.y = ReadMemory<float>(hProcess, entity.base + 0x8);
+        entity.position_head.z = ReadMemory<float>(hProcess, entity.base + 0xC);
+        entity.position_feet.x = ReadMemory<float>(hProcess, entity.base + 0x4);
+        entity.position_feet.y = ReadMemory<float>(hProcess, entity.base + 0x8);
+        entity.position_feet.z = ReadMemory<float>(hProcess, entity.base + 0x30);
+        entity.team = ReadMemory<int>(hProcess, entity.base + 0x32C);
+
+        if (entity.health > 0) {
+            entities.push_back(entity);
+        }
+    }
+}
+
+// Function to continuously read memory in a separate thread
+void MemoryReaderThread(HANDLE hProcess, uintptr_t moduleBase) {
+    while (memoryReaderRunning.load()) {
+        {
+            std::lock_guard<std::mutex> lock(memoryMutex);
+            g_players = GetPlayerData(hProcess, moduleBase);
+            GetViewMatrix(hProcess, g_viewMatrix);
+            g_cameraYaw = GetCameraYaw(hProcess, moduleBase);
+            g_cameraPitch = GetCameraPitch(hProcess, moduleBase);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Adjust the sleep duration if necessary
+    }
+}
+
+void StartMemoryReaderThread(HANDLE hProcess, uintptr_t moduleBase) {
+    memoryReaderRunning.store(true);
+    std::thread(MemoryReaderThread, hProcess, moduleBase).detach();
+}
+
+void StopMemoryReaderThread() {
+    memoryReaderRunning.store(false);
+}
+
+File: Memory reader.h
+Code here:
+#pragma once
+#include <Windows.h>
+#include <TlHelp32.h>
+#include <vector>
+#include <array>
+#include <mutex>  // Add this include for the mutex
+#include <atomic>  // Add this include for atomic
+
+#include "Utils.h"
+
+struct Player {
+    Vector3 position;  // Player position
+    Vector3 head;      // Player head position
+    Vector3 feet;      // Player feet position
+    int health = 0;    // Player health, initialize to 0
+    bool isAlive = false; // Player alive status, initialize to false
+};
+
+struct Entity {
+    uintptr_t base = 0;
+    char name[20] = {};
+    int health = 0;
+    Vector3 position_head;
+    Vector3 position_feet;
+    int team = 0;
+};
+
+DWORD GetProcId(const wchar_t* procName);
+uintptr_t GetModuleBaseAddress(DWORD procId, const wchar_t* modName);
+
+template <typename T>
+T ReadMemory(HANDLE hProcess, uintptr_t address);
+
+float GetCameraYaw(HANDLE hProcess, uintptr_t moduleBase);
+float GetCameraPitch(HANDLE hProcess, uintptr_t moduleBase);
+
+uintptr_t ReadPointer(HANDLE hProcess, uintptr_t address);
+void GetViewMatrix(HANDLE hProcess, viewMatrix& viewMatrix);
+std::vector<Player> GetPlayerData(HANDLE hProcess, uintptr_t moduleBase);
+void ReadPlayerData(HANDLE hProcess, uintptr_t entityListBase, int playerIndex, std::vector<Player>& players);
+void ReadEntities(HANDLE hProcess, uintptr_t moduleBase, std::vector<Entity>& entities);
+
+void StartMemoryReaderThread(HANDLE hProcess, uintptr_t moduleBase);
+void StopMemoryReaderThread();
+
+
+File: Overlay.cpp
+Code here:
+#include <windows.h>
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <DirectXMath.h>
+#include "Overlay.h"
+
+#pragma comment (lib, "d3d11.lib")
+#pragma comment (lib, "dxgi.lib")
+#pragma comment (lib, "d3dcompiler.lib")
+
+IDXGISwapChain* swapchain;
+ID3D11Device* dev;
+ID3D11DeviceContext* devcon;
+ID3D11RenderTargetView* backbuffer;
+
+void InitD3D(HWND hWnd);
+void RenderFrame(void);
+void CleanD3D(void);
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+void CreateOverlayWindow(HINSTANCE hInstance);
+
+void InitD3D(HWND hWnd) {
+    DXGI_SWAP_CHAIN_DESC scd;
+    ZeroMemory(&scd, sizeof(DXGI_SWAP_CHAIN_DESC));
+
+    scd.BufferCount = 1;
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferDesc.Width = 800;
+    scd.BufferDesc.Height = 600;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = hWnd;
+    scd.SampleDesc.Count = 4;
+    scd.Windowed = TRUE;
+    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+
+    D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, NULL, NULL, NULL, D3D11_SDK_VERSION,
+        &scd, &swapchain, &dev, NULL, &devcon);
+
+    ID3D11Texture2D* pBackBuffer;
+    swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);
+
+    dev->CreateRenderTargetView(pBackBuffer, NULL, &backbuffer);
+    pBackBuffer->Release();
+
+    devcon->OMSetRenderTargets(1, &backbuffer, NULL);
+
+    D3D11_VIEWPORT viewport;
+    ZeroMemory(&viewport, sizeof(D3D11_VIEWPORT));
+
+    viewport.TopLeftX = 0;
+    viewport.TopLeftY = 0;
+    viewport.Width = 800;
+    viewport.Height = 600;
+
+    devcon->RSSetViewports(1, &viewport);
+}
+
+void RenderFrame(void) {
+    // Define the clear color (Midnight Blue)
+    const float clearColor[4] = { 0.1f, 0.1f, 0.4f, 1.0f };
+
+    devcon->ClearRenderTargetView(backbuffer, clearColor);
+
+    // Drawing code here
+    // e.g. draw a red circle in the middle of the screen
+    // For simplicity, let's just clear the screen to a color
+
+    swapchain->Present(0, 0);
+}
+
+void CleanD3D(void) {
+    swapchain->SetFullscreenState(FALSE, NULL);
+    backbuffer->Release();
+    swapchain->Release();
+    dev->Release();
+    devcon->Release();
+}
+
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProc(hWnd, message, wParam, lParam);
+}
+
+void CreateOverlayWindow(HINSTANCE hInstance) {
+    WNDCLASSEX wc;
+    ZeroMemory(&wc, sizeof(WNDCLASSEX));
+
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = L"WindowClass";
+
+    RegisterClassEx(&wc);
+
+    HWND hWnd = CreateWindowEx(NULL,
+        L"WindowClass",
+        L"Our DirectX Program",
+        WS_OVERLAPPEDWINDOW,
+        100, 100,
+        800, 600,
+        NULL,
+        NULL,
+        hInstance,
+        NULL);
+
+    ShowWindow(hWnd, SW_SHOW);
+
+    InitD3D(hWnd);
+
+    MSG msg;
+    while (TRUE) {
+        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+
+        if (msg.message == WM_QUIT) break;
+
+        RenderFrame();
+    }
+
+    CleanD3D();
+}
+
+File: Resource.h
+Code here:
+//{{NO_DEPENDENCIES}}
+// Microsoft Visual C++ generated include file.
+// Used by Assault cube hack.rc
+
+#define IDS_APP_TITLE			103
+
+#define IDR_MAINFRAME			128
+#define IDD_ASSAULTCUBEHACK_DIALOG	102
+#define IDD_ABOUTBOX			103
+#define IDM_ABOUT				104
+#define IDM_EXIT				105
+#define IDI_ASSAULTCUBEHACK			107
+#define IDI_SMALL				108
+#define IDC_ASSAULTCUBEHACK			109
+#define IDC_MYICON				2
+#ifndef IDC_STATIC
+#define IDC_STATIC				-1
+#endif
+// Next default values for new objects
+//
+#ifdef APSTUDIO_INVOKED
+#ifndef APSTUDIO_READONLY_SYMBOLS
+
+#define _APS_NO_MFC					130
+#define _APS_NEXT_RESOURCE_VALUE	129
+#define _APS_NEXT_COMMAND_VALUE		32771
+#define _APS_NEXT_CONTROL_VALUE		1000
+#define _APS_NEXT_SYMED_VALUE		110
+#endif
+#endif
+
+
+File: targetver.h
+Code here:
+#pragma once
+
+// // Including SDKDDKVer.h defines the highest available Windows platform.
+// If you wish to build your application for a previous Windows platform, include WinSDKVer.h and
+// set the _WIN32_WINNT macro to the platform you wish to support before including SDKDDKVer.h.
+#include <SDKDDKVer.h>
+
+
+File: Utils.cpp
+Code here:
+#include "Utils.h"
+#include <iostream>
+#include <iomanip>
+#include "Vector3.h"
+#include "Vector4.h"
+#include "Vector2.h"
+#include <cmath>
+
+bool worldToScreen(const Vector3& pos, Vector2& screen, const viewMatrix& matrix, int windowWidth, int windowHeight) {
+    Vector4 clip_coords;
+    clip_coords.x = pos.x * matrix.matrix[0] + pos.y * matrix.matrix[4] + pos.z * matrix.matrix[8] + matrix.matrix[12];
+    clip_coords.y = pos.x * matrix.matrix[1] + pos.y * matrix.matrix[5] + pos.z * matrix.matrix[9] + matrix.matrix[13];
+    clip_coords.z = pos.x * matrix.matrix[2] + pos.y * matrix.matrix[6] + pos.z * matrix.matrix[10] + matrix.matrix[14];
+    clip_coords.w = pos.x * matrix.matrix[3] + pos.y * matrix.matrix[7] + pos.z * matrix.matrix[11] + matrix.matrix[15];
+
+    if (clip_coords.w < 0.1f) {
+        std::cout << "Clip coords W is too small: " << clip_coords.w << std::endl;
+        return false;
+    }
+
+    Vector3 NDC;
+    NDC.x = clip_coords.x / clip_coords.w;
+    NDC.y = clip_coords.y / clip_coords.w;
+    NDC.z = clip_coords.z / clip_coords.w;
+
+    screen.x = (windowWidth / 2 * NDC.x) + (NDC.x + windowWidth / 2);
+    screen.y = -(windowHeight / 2 * NDC.y) + (NDC.y + windowHeight / 2);
+
+    std::cout << "World Pos: (" << pos.x << ", " << pos.y << ", " << pos.z << ") -> Screen Pos: (" << screen.x << ", " << screen.y << ")" << std::endl;
+
+    return true;
+}
+
+File: Utils.h
+Code here:
+#pragma once
+
+#include "Vector3.h"
+#include "Vector4.h"
+#include "Vector2.h"
+
+struct viewMatrix {
+    float matrix[16];
+};
+
+bool worldToScreen(const Vector3& pos, Vector2& screen, const viewMatrix& matrix, int windowWidth, int windowHeight);
+
+File: Vector2.h
+Code here:
+#pragma once
+
+struct Vector2 {
+    float x, y;
+
+    Vector2() : x(0), y(0) {}
+    Vector2(float x, float y) : x(x), y(y) {}
+
+    // Add any other necessary member functions here
+};
+
+File: Vector3.h
+Code here:
+#pragma once
+
+struct Vector3 {
+    float x, y, z;
+
+    Vector3() : x(0), y(0), z(0) {}
+    Vector3(float x, float y, float z) : x(x), y(y), z(z) {}
+
+    // Add any other necessary member functions here
+};
+
+File: Vector4.h
+Code here:
+#pragma once
+
+struct Vector4 {
+    float x, y, z, w;
+
+    Vector4() : x(0), y(0), z(0), w(0) {}
+    Vector4(float x, float y, float z, float w) : x(x), y(y), z(z), w(w) {}
+
+    // Add any other necessary member functions here
+};
+

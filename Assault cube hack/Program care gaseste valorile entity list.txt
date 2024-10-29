@@ -1,0 +1,135 @@
+#include <Windows.h>
+#include <TlHelp32.h>
+#include <iostream>
+#include <vector>
+#include <conio.h> // For _getch()
+
+DWORD GetProcId(const wchar_t* procName) {
+    DWORD procId = 0;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32 procEntry;
+        procEntry.dwSize = sizeof(procEntry);
+        if (Process32First(hSnap, &procEntry)) {
+            do {
+                if (!_wcsicmp(procEntry.szExeFile, procName)) {
+                    procId = procEntry.th32ProcessID;
+                    break;
+                }
+            } while (Process32Next(hSnap, &procEntry));
+        }
+    }
+    CloseHandle(hSnap);
+    return procId;
+}
+
+uintptr_t GetModuleBaseAddress(DWORD procId, const wchar_t* modName) {
+    uintptr_t modBaseAddr = 0;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, procId);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32 modEntry;
+        modEntry.dwSize = sizeof(modEntry);
+        if (Module32First(hSnap, &modEntry)) {
+            do {
+                if (!_wcsicmp(modEntry.szModule, modName)) {
+                    modBaseAddr = (uintptr_t)modEntry.modBaseAddr;
+                    break;
+                }
+            } while (Module32Next(hSnap, &modEntry));
+        }
+    }
+    CloseHandle(hSnap);
+    return modBaseAddr;
+}
+
+template <typename T>
+T ReadMemory(HANDLE hProcess, uintptr_t address) {
+    T buffer;
+    if (!ReadProcessMemory(hProcess, (LPCVOID)address, &buffer, sizeof(T), NULL)) {
+        std::cerr << "Failed to read memory at address: " << std::hex << address << std::dec << std::endl;
+        return 0;
+    }
+    return buffer;
+}
+
+uintptr_t ReadPointer(HANDLE hProcess, uintptr_t address) {
+    DWORD buffer = 0;
+    if (!ReadProcessMemory(hProcess, (LPCVOID)address, &buffer, sizeof(buffer), NULL)) {
+        std::cerr << "Failed to read pointer at address: " << std::hex << address << std::dec << std::endl;
+        return 0;
+    }
+    return static_cast<uintptr_t>(buffer);
+}
+
+void ReadPlayerData(HANDLE hProcess, uintptr_t entityListBase, int playerIndex) {
+    uintptr_t playerBasePtr = entityListBase + (playerIndex * 4);
+    std::cout << "Calculated player base pointer address for player " << playerIndex + 1 << ": " << std::hex << playerBasePtr << std::dec << std::endl;
+
+    uintptr_t playerBase = ReadPointer(hProcess, playerBasePtr);
+    std::cout << "Read player base address for player " << playerIndex + 1 << ": " << std::hex << playerBase << std::dec << std::endl;
+
+    if (playerBase == 0) {
+        std::cerr << "Failed to read memory at address: " << std::hex << playerBasePtr << std::dec << std::endl;
+        return;
+    }
+
+    // Read Health
+    uintptr_t healthAddress = playerBase + 0xEC;
+    int health = ReadMemory<int>(hProcess, healthAddress);
+    std::cout << "Health of player " << playerIndex + 1 << ": " << health << std::endl;
+
+    // Read Positions
+    float x = ReadMemory<float>(hProcess, playerBase + 0x4);
+    float y = ReadMemory<float>(hProcess, playerBase + 0x8);
+    float z = ReadMemory<float>(hProcess, playerBase + 0xC);
+    std::cout << "Position of player " << playerIndex + 1 << ": (" << x << ", " << y << ", " << z << ")" << std::endl;
+}
+
+int main() {
+    const wchar_t* procName = L"ac_client.exe";
+    DWORD procId = GetProcId(procName);
+
+    if (procId == 0) {
+        std::cerr << "AssaultCube process not found." << std::endl;
+        return 1;
+    }
+
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, procId);
+    if (!hProcess) {
+        std::cerr << "Failed to open process." << std::endl;
+        return 1;
+    }
+
+    uintptr_t moduleBase = GetModuleBaseAddress(procId, procName);
+    if (moduleBase == 0) {
+        std::cerr << "Failed to get module base address." << std::endl;
+        CloseHandle(hProcess);
+        return 1;
+    }
+
+    std::cout << "Process ID: " << procId << std::endl;
+    std::cout << "Module Base Address: " << std::hex << moduleBase << std::dec << std::endl;
+
+    uintptr_t entityListBaseAddress = moduleBase + 0x0018AC04;
+    std::cout << "Entity List Base Address: " << std::hex << entityListBaseAddress << std::dec << std::endl;
+
+    uintptr_t entityListBase = ReadPointer(hProcess, entityListBaseAddress);
+    if (entityListBase == 0) {
+        std::cerr << "Failed to read entity list base address." << std::endl;
+        CloseHandle(hProcess);
+        return 1;
+    }
+
+    std::cout << "Entity List Base: " << std::hex << entityListBase << std::dec << std::endl;
+
+    // Iterate over each player (31 players in total)
+    for (int i = 0; i < 31; ++i) {
+        ReadPlayerData(hProcess, entityListBase, i);
+    }
+
+    CloseHandle(hProcess);
+
+    std::cout << "Press any key to exit..." << std::endl;
+    _getch(); // Wait for a key press
+    return 0;
+}

@@ -1,4 +1,3 @@
-// Globals.cpp
 #include "Globals.h"
 
 viewMatrix g_viewMatrix;

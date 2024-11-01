@@ -8,7 +8,6 @@
 #include <thread>
 #include <atomic>
 
-// No need to redefine globals here
 
 DWORD GetProcId(const wchar_t* procName) {
     DWORD procId = 0;
@@ -66,15 +65,13 @@ uintptr_t ReadPointer(HANDLE hProcess, uintptr_t address) {
 }
 
 void GetViewMatrix(HANDLE hProcess, viewMatrix& viewMatrix) {
-    uintptr_t baseAddress = 0x0057DFD0; // Adjust this address if necessary
-    for (int i = 0; i < 16; ++i) {
+    uintptr_t baseAddress = 0x0057DFD0;     for (int i = 0; i < 16; ++i) {
         viewMatrix.matrix[i] = ReadMemory<float>(hProcess, baseAddress + i * sizeof(float));
     }
 }
 
 void ReadPlayerData(HANDLE hProcess, uintptr_t entityListBase, int playerIndex, std::vector<Player>& players) {
-    uintptr_t playerBasePtr = entityListBase + (playerIndex * sizeof(DWORD)); // 4-byte offset
-    uintptr_t playerBase = ReadPointer(hProcess, playerBasePtr);
+    uintptr_t playerBasePtr = entityListBase + (playerIndex * sizeof(DWORD));     uintptr_t playerBase = ReadPointer(hProcess, playerBasePtr);
 
     if (playerBase == 0) {
         return;
@@ -82,17 +79,14 @@ void ReadPlayerData(HANDLE hProcess, uintptr_t entityListBase, int playerIndex, 
 
     Player player;
 
-    // Read Health
-    player.health = ReadMemory<int>(hProcess, playerBase + 0xEC);
+        player.health = ReadMemory<int>(hProcess, playerBase + 0xEC);
     player.isAlive = player.health > 0;
 
-    // Read Positions
-    player.position.x = ReadMemory<float>(hProcess, playerBase + 0x4);
+        player.position.x = ReadMemory<float>(hProcess, playerBase + 0x4);
     player.position.y = ReadMemory<float>(hProcess, playerBase + 0x8);
     player.position.z = ReadMemory<float>(hProcess, playerBase + 0xC);
 
-    // Read Head and Feet Positions from memory
-    player.head.x = ReadMemory<float>(hProcess, playerBase + 0x4);
+        player.head.x = ReadMemory<float>(hProcess, playerBase + 0x4);
     player.head.y = ReadMemory<float>(hProcess, playerBase + 0x8);
     player.head.z = ReadMemory<float>(hProcess, playerBase + 0xC);
 
@@ -100,8 +94,7 @@ void ReadPlayerData(HANDLE hProcess, uintptr_t entityListBase, int playerIndex, 
     player.feet.y = ReadMemory<float>(hProcess, playerBase + 0x8);
     player.feet.z = ReadMemory<float>(hProcess, playerBase + 0x30);
 
-    // Read Team
-    player.team = ReadMemory<int>(hProcess, playerBase + 0x30C);
+        player.team = ReadMemory<int>(hProcess, playerBase + 0x30C);
 
     if (player.isAlive) {
         players.push_back(player);
@@ -135,8 +128,7 @@ float GetCameraPitch(HANDLE hProcess, uintptr_t moduleBase) {
 }
 
 void ReadEntities(HANDLE hProcess, uintptr_t moduleBase, std::vector<Entity>& entities) {
-    // Define offsets for entities
-    uintptr_t entityListBase = moduleBase + 0x0018AC04;
+        uintptr_t entityListBase = moduleBase + 0x0018AC04;
     uintptr_t entityBase = ReadPointer(hProcess, entityListBase);
 
     for (int i = 0; i < 31; ++i) {
@@ -159,7 +151,6 @@ void ReadEntities(HANDLE hProcess, uintptr_t moduleBase, std::vector<Entity>& en
     }
 }
 
-// Function to continuously read memory in a separate thread
 void MemoryReaderThread(HANDLE hProcess, uintptr_t moduleBase) {
     while (memoryReaderRunning.load()) {
         {

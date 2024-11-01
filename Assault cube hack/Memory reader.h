@@ -3,8 +3,8 @@
 #include <TlHelp32.h>
 #include <vector>
 #include <array>
-#include <mutex>  // Add this include for the mutex
-#include <atomic>  // Add this include for atomic
+#include <mutex>  
+#include <atomic>  
 
 #include "Utils.h"
 

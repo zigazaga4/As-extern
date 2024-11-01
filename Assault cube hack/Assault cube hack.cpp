@@ -3,8 +3,7 @@
 #include "Directx.h"
 #include "Memory reader.h"
 #include "Utils.h"
-#include <conio.h> // For _getch()
-
+#include <conio.h> 
 int main() {
     const wchar_t* procName = L"ac_client.exe";
     DWORD procId = GetProcId(procName);
@@ -35,8 +34,7 @@ int main() {
 
     std::vector<Player> players = GetPlayerData(hProcess, moduleBase);
 
-    // Read camera angles
-    float cameraYaw = GetCameraYaw(hProcess, moduleBase);
+        float cameraYaw = GetCameraYaw(hProcess, moduleBase);
     float cameraPitch = GetCameraPitch(hProcess, moduleBase);
 
     std::vector<Entity> entities;
@@ -44,18 +42,14 @@ int main() {
 
     std::cout << "View matrix, camera angles, player data, and entities retrieved." << std::endl;
 
-    // Close handle to the process
-    CloseHandle(hProcess);
+        CloseHandle(hProcess);
 
-    // Create overlay window and render ESP
-    HWND hGameWnd = FindWindow(NULL, L"AssaultCube"); // Make sure to replace with the correct game window title
-    if (!hGameWnd) {
+        HWND hGameWnd = FindWindow(NULL, L"AssaultCube");     if (!hGameWnd) {
         std::cerr << "Game window not found." << std::endl;
         return 1;
     }
 
-    // Get game window dimensions
-    RECT clientRect;
+        RECT clientRect;
     GetClientRect(hGameWnd, &clientRect);
     int screenWidth = clientRect.right - clientRect.left;
     int screenHeight = clientRect.bottom - clientRect.top;
@@ -65,6 +59,5 @@ int main() {
     CreateOverlayWindow(GetModuleHandle(NULL), hGameWnd, viewMatrix, players, screenWidth, screenHeight, cameraYaw, cameraPitch);
 
     std::cout << "Press any key to exit..." << std::endl;
-    _getch(); // Wait for a key press
-    return 0;
+    _getch();     return 0;
 }

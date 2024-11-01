@@ -40,16 +40,14 @@ HWND hOverlayWnd = nullptr;
 
 void InitD3D(HWND hWnd) {
     DXGI_SWAP_CHAIN_DESC scd = {};
-    scd.BufferCount = 2; // Double buffering
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferCount = 2;     scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     scd.BufferDesc.Width = g_screenWidth;
     scd.BufferDesc.Height = g_screenHeight;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.OutputWindow = hWnd;
     scd.SampleDesc.Count = 1;
     scd.Windowed = TRUE;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD; // Discard for better performance
-    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;     scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
         nullptr,
@@ -134,10 +132,8 @@ void RenderFrame() {
 
     if (pRenderTarget) {
         pRenderTarget->BeginDraw();
-        pRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));  // Transparent color
-
-        // Call RenderESP to draw player ESP
-        {
+        pRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));  
+                {
             std::lock_guard<std::mutex> lock(memoryMutex);
             RenderESP(pRenderTarget.Get(), pBrush.Get(), g_viewMatrix, g_players, g_screenWidth, g_screenHeight, g_cameraYaw, g_cameraPitch);
         }
@@ -145,8 +141,7 @@ void RenderFrame() {
         HRESULT hr = pRenderTarget->EndDraw();
     }
 
-    swapchain->Present(0, 0); // Disable vsync for higher FPS
-}
+    swapchain->Present(0, 0); }
 
 void CleanD3D() {
     swapchain->SetFullscreenState(FALSE, NULL);
@@ -212,10 +207,8 @@ void CreateOverlayWindow(HINSTANCE hInstance, HWND hGameWnd, const viewMatrix& v
     HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, procId);
     uintptr_t moduleBase = GetModuleBaseAddress(procId, L"ac_client.exe");
 
-    StartMemoryReaderThread(hProcess, moduleBase);  // Start the memory reader thread
-
-    // Increase the priority of the current thread to ensure smoother rendering
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    StartMemoryReaderThread(hProcess, moduleBase);  
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
     while (msg.message != WM_QUIT) {
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -223,11 +216,9 @@ void CreateOverlayWindow(HINSTANCE hInstance, HWND hGameWnd, const viewMatrix& v
             DispatchMessage(&msg);
         }
 
-        RenderFrame(); // Continuously render the frame
-    }
+        RenderFrame();     }
 
-    StopMemoryReaderThread();  // Stop the memory reader thread
-
+    StopMemoryReaderThread();  
     CloseHandle(hProcess);
     CleanD3D();
 }

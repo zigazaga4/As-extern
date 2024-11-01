@@ -1,11 +1,10 @@
-// Globals.h
 #pragma once
 
 #include <atomic>
 #include <vector>
 #include <mutex>
 #include "Utils.h"
-#include "Memory reader.h"  // Ensure this include is correct
+#include "Memory reader.h"
 
 extern viewMatrix g_viewMatrix;
 extern std::vector<Player> g_players;

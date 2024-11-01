@@ -1,13 +1,11 @@
-// Directx.h
 #pragma once
 #include <Windows.h>
 #include <d2d1.h>
 #include <vector>
 #include "Memory reader.h"
 #include "Utils.h"
-#include "Globals.h" // Include the Globals header for global variables
+#include "Globals.h" 
 
-// Function declarations
 void InitD3D(HWND hWnd);
 void InitD2D();
 void RenderFrame();
